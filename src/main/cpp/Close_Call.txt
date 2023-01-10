@@ -1,0 +1,855 @@
+/*----------------------------------------------------------------------------*/
+/* Copyright (c) 2018 FIRST. All Rights Reserved.                             */
+/* Open Source Software - may be modified and shared by FRC teams. The code   */
+/* must be accompanied by the FIRST BSD license file in the root directory of */
+/* the project.                                                               */
+/*----------------------------------------------------------------------------*/
+
+#include <stdio.h>
+#include <frc/Joystick.h>
+//#include <frc/PWMVictorSPX.h>
+//#include <frc/wpilib.h> //RJT put this to allow compiling
+//#include "ctre/Phoenix.h"
+#include <frc/TimedRobot.h>
+
+//#define Phoenix_No_WPI
+#include "ctre/Phoenix.h"
+
+//#include <smartdashboard/Smartdashboard.h>
+//#include <SmartDashboard/SendableChooser.h>
+//#include "ctre/PowerDistributionPanel.h"
+#include <frc/Solenoid.h>
+//#include <CameraServer.h>
+#include <opencv2/core/core.hpp>
+#include <opencv2/core/types.hpp>
+#include <opencv2/imgproc/imgproc.hpp>
+#include <thread>
+#include "networktables/NetworkTable.h"
+#include "networktables/NetworkTableInstance.h"
+#include <vector>
+
+#define TIMEOUT 10
+#define NOTIMEOUT 0
+#define TRUE 1
+#define FALSE 0
+
+//LimeLight Defines
+#define PI 3.1515927
+#define TARGET 0
+#define CAMERA 1
+#define TARGET_ABOVE_CAMERA	6.27	// Vertical Distance from camera to center of reflective tape = 6.27 ft
+#define GOAL_ABOVE_SHOOTER	7.00	// Vertical Distance from shooter to center of upper goal = 7.00 ft
+#define ADD_TO_INNER_GOAL	2.4375	// Horizontal Distance from outer goal to inner goal = 2'5.25"
+#define CAMERA_ANGLE	20.00 //40	// Angle (Pitch) of mounted camera
+int ShooterTurns;
+//double shooterAngle;
+//double shooterAdjustVERT,shooterAdjustROT;
+double distanceToGoal, distanceToInnerGoal, goalAngle, innerGoalAngle;
+double rob_velocity, rob_direction, tur_rotation, tur_angle;
+int GettingBalls = FALSE;
+int LimeMode = TARGET;
+int TargettingMode = TARGET;
+char BallIntakeStr[2][10] = {"Off","On"};
+char LimeModeStr[2][10] = {"Target","Camera"};
+char TargettingModeStr[2][10] = {"Auto","Manual"};
+char DriveModeStr[5][10] = {"Stop","Rotate","Forward","Reverse","Tank"};
+int T=0;
+int loopcounter=0;
+double AngleCorrection = 35.0/14.0;
+
+int Initialized = 0;
+int ClimbIsBack = 0;
+int ClimbIsUp = 0;
+int ClimbMode = 0;
+int ClimberState=0;
+int CreeperOK=0;
+
+//Intake variables
+int IntakeIsDown = 0;
+int Magazine_On = 0;
+int Intake_On=0;
+int MagazineState=0;
+int WheelState=0;
+int WheelOn=0;
+double Drive_Speed_Target=0;
+
+//Shooter Variables
+int Shooter_On = 0, Shooter_Trigger_On = 0, ShooterState = 0, Agitate_on = 0;
+int ServoEncoderCounts, TurretEncoderCounts;
+int Turret_X_Target = 0, Turret_Y_Target = 0, ManualTargeting = 0;
+float TargetFoundX = 0.0, TargetFoundY = 0.0;
+float Shooter_Speed_Target = 0;
+float Current0=0;
+int ZeroTurret=0,WasTelop=0, WasAuto=0;
+
+int BreakInNum = 0;
+
+class Robot : public frc::TimedRobot
+{
+public:
+    void RobotInit(void);
+
+    void RobotDrive()
+    {
+        double left, right,t;
+        Drive_Speed_Target = ((1.0));// + (-Left_Stick.GetZ())) / 2.0);
+        left = ((Left_Stick.GetY() * ((-Left_Stick.GetZ()+1)/2)));
+        right = ((Right_Stick.GetY() * ((-Right_Stick.GetZ()+1)/2)));
+        //t=AutoTimer.Get();
+
+        if(left<0){
+            left=-1.0*(left*left);
+        }else{
+            left=left*left;
+        }
+
+        if(right<0){
+            right=-1.0*(right*right);
+        }else{
+            right=right*right;
+        }
+        
+        if(IsAutonomous()&&t<3.0){ //t>4.0&&t<7.0){
+            Intake_On=1;
+            //Magazine_On=1;
+            Magazine_Motor.Set(ControlMode::PercentOutput, .70);
+            //LR_Motor.Set(ControlMode::PercentOutput, -.50);
+            //LF_Motor.Set(ControlMode::PercentOutput, -.50);
+            //RR_Motor.Set(ControlMode::PercentOutput, .57);
+            //RF_Motor.Set(ControlMode::PercentOutput, .57);
+        }else if(IsAutonomous()&&t<14.0&&t>13.0){
+            LR_Motor.Set(ControlMode::PercentOutput, .35);
+            LF_Motor.Set(ControlMode::PercentOutput, .35);
+            RR_Motor.Set(ControlMode::PercentOutput, -.35);
+            RF_Motor.Set(ControlMode::PercentOutput, -.35);
+        } else if(IsAutonomous()){
+            LR_Motor.Set(ControlMode::PercentOutput, 0);
+            LF_Motor.Set(ControlMode::PercentOutput, 0);
+            RR_Motor.Set(ControlMode::PercentOutput, 0);
+            RF_Motor.Set(ControlMode::PercentOutput, 0);
+        }
+        else{
+             LR_Motor.Set(ControlMode::PercentOutput, -left*Drive_Speed_Target);
+            LF_Motor.Set(ControlMode::PercentOutput, -left*Drive_Speed_Target);
+           RR_Motor.Set(ControlMode::PercentOutput, right*Drive_Speed_Target);
+            RF_Motor.Set(ControlMode::PercentOutput, right*Drive_Speed_Target);
+        
+        }
+ 
+    }
+
+    void Climber()
+    {
+        if(Turret_Stick.GetRawButton(8)){
+            ClimbIsUp = 1;
+            Climber_Up.Set(1);
+            Climber_Down.Set(0);
+            ClimberState=1;
+        }
+        if(Turret_Stick.GetRawButton(7)){
+            ClimbIsUp = 0;
+            Climber_Up.Set(0);
+            Climber_Down.Set(1);
+            ClimberState = 1;
+        }
+        if(Turret_Stick.GetRawButton(6)){
+                        ClimberState=1;
+        }
+        if(Turret_Stick.GetRawButton(4)){
+                        ClimberState=0;
+        }
+        
+        if(ClimberState==1){
+            Winch_Motor.Set(ControlMode::PercentOutput, -Turret_Stick.GetY());
+        }
+    }
+    void WheelOF()
+    {
+        if(Turret_Stick.GetRawButton(12))
+        {
+            WheelState=1;
+            WheelOF_Up.Set(1);
+            WheelOF_Down.Set(0);
+        }
+        else if (Turret_Stick.GetRawButton(11))
+        {
+            WheelState=0;
+            WheelOF_Up.Set(0);
+            WheelOF_Down.Set(1);
+        }
+        if(WheelState && Turret_Stick.GetTrigger()){
+            WheelOF_Motor.Set(ControlMode::PercentOutput, Turret_Stick.GetY()); 
+        }else{
+            WheelOF_Motor.Set(ControlMode::PercentOutput, 0); 
+        }
+
+    }
+    void Intake()
+    {
+     
+        if (Left_Stick.GetRawButton(2) || Right_Stick.GetRawButton(2))
+        {
+            IntakeIsDown = 0;
+            Intake_Up.Set(1);
+            Intake_Down.Set(0);
+        }
+        else if (Left_Stick.GetRawButton(3) || Right_Stick.GetRawButton(3))
+        {
+            IntakeIsDown = 1;
+            Intake_Up.Set(0);
+            Intake_Down.Set(1);
+        }
+        //Intake balls
+        if (Left_Stick.GetTrigger() || Right_Stick.GetTrigger())
+        {
+            Intake_On=1; 
+            Magazine_On = 1;
+        }
+        else if (Left_Stick.GetRawButton(4) || Right_Stick.GetRawButton(4))
+        {
+            Intake_On=-1; 
+            Magazine_On = -1;
+            //Shooter_Trigger_On=-1;
+        }
+        else if (Left_Stick.GetRawButton(5) || Right_Stick.GetRawButton(5))
+        {
+            Intake_On=-2; 
+            Magazine_On = -2;
+            //Shooter_Trigger_On=-1;
+        }
+        else
+        {
+            Intake_On=0; 
+            Magazine_On = 0;
+        }
+    
+        if(IsAutonomous()){
+            Intake_On=1;
+            //Magazine_On=1;
+        }
+
+        if (Shooter_On)
+        {
+            Magazine_On = 1; //force intake of balls in to trigger wheel while shooting
+            Intake_On=1;     
+        }
+       
+        if(Intake_On==1){
+           Intake_Motor.Set(ControlMode::PercentOutput, .6);
+        }else if(Intake_On==-1){
+            Intake_Motor.Set(ControlMode::PercentOutput, -.6);
+        }else if(Intake_On==-2){
+            Intake_Motor.Set(ControlMode::PercentOutput, -1.0);
+        }else{
+            Intake_Motor.Set(ControlMode::PercentOutput, .15);
+        }
+
+        if (Magazine_On == -1) {
+            Magazine_Motor.Set(ControlMode::PercentOutput, .35);
+            MagazineTimer.Reset();
+            MagazineState=0;
+        }else if (Magazine_On == -2) {
+            Magazine_Motor.Set(ControlMode::PercentOutput, 1);
+            MagazineTimer.Reset();
+            MagazineState=0;
+        }else if (Magazine_On == 1){
+            if(!Shooter_On){
+                Magazine_Motor.Set(ControlMode::PercentOutput, -1); //forward
+                MagazineTimer.Reset();
+                MagazineState=0;
+            }else{
+                Magazine_Motor.Set(ControlMode::PercentOutput, -.35);
+                if (Agitate_on == 1){        //OLD AGITATE CODE
+                    switch (MagazineState){
+                        case 0: if(MagazineTimer.Get()>1.0){
+                                MagazineTimer.Reset();
+                                MagazineState=1;
+                                }
+                                Magazine_Motor.Set(ControlMode::PercentOutput, -.35); //forward
+                                break;
+                        case 1: if(MagazineTimer.Get()>.4){
+                                MagazineTimer.Reset();
+                                MagazineState=0;
+                                }
+                                if(!IsAutonomous()&&Turret_Stick.GetRawButton(3)) Magazine_Motor.Set(ControlMode::PercentOutput, .35); //reverse
+                                else Magazine_Motor.Set(ControlMode::PercentOutput, -.35); //forward
+                                break;
+                    }
+                }
+                 
+            }
+            
+        }
+        else
+        {
+            Magazine_Motor.Set(ControlMode::PercentOutput, 0); 
+            MagazineState=0;
+            MagazineTimer.Reset();
+        }
+    }
+
+//Auto Targeting
+    /*void ImageProcTargetting (void){
+        TargetFoundX = ImageX.GetVoltage();
+        TargetFoundY = ImageY.GetVoltage();
+        if (ZeroTurret){
+            Turret_X_Target-=10000;
+        }else if(!ManualTargeting){
+            if(TargetFoundX > .3){
+                if (TargetFoundX > 2.0)
+                    Turret_X_Target += (int)(((TargetFoundX - 2.0) / 2.0) * 5000.0);
+                if (TargetFoundX < 2.0)
+                    Turret_X_Target -= (int)(((2.0 - TargetFoundX) / 2.0) * 5000.0);
+                    if(TargetFoundY<1.12) Turret_Y_Target=621;
+                    else if(TargetFoundY>1.98) Turret_Y_Target=1100;
+                    else Turret_Y_Target=(((TargetFoundY-1.12)/(1.98-1.12)) * (1100-621))+621; 
+                    Turret_Y_Target=-Turret_Y_Target;
+                    //Turret_Y_Target = (int)((TargetFoundY - 1.12) * -800.0);
+                //Turret_Y_Target = (int)((TargetFoundY - 0.6) * -800.0);
+            }else{ //look at joystick for clue as to which way to move
+                if(!ClimbIsUp&&(Turret_Stick.GetX()>.2||Turret_Stick.GetX()<-.2) ) Turret_X_Target -= (int)(Turret_Stick.GetX() * 5000);
+                else Turret_X_Target=-2500;
+            }
+        }
+    }
+    */
+    void TargetLime(void)
+    {
+        if (ZeroTurret){
+            Turret_X_Target-=10000;
+        }else if(!ManualTargeting){
+            Turret_Motor.ConfigPeakOutputForward(+0.5f, TIMEOUT); //sets max speed of movement .5 is about max needed
+            Turret_Motor.ConfigPeakOutputReverse(-0.5f, TIMEOUT);
+            //Get error values from Limelight
+            targetOffsetAngleHorizontal = table->GetNumber("tx",0.0);
+            targetOffsetAngleVertical = table->GetNumber("ty",0.0);
+            targetArea = table->GetNumber("ta",0.0);
+
+            
+                /* determine difference between vertical shooter and target in degrees:
+                    offset by targetOffsetAngleVertical if camera is mounted on the shooter
+                    else
+                        offest by goalAngle or innerGoalAngle as appropriate
+                        and must use limelight to detect if a valid value is determined (0=ignore)
+                    in any case may need to be offset by an additonal constant (or slider controlled)*/
+            
+            if (TargettingMode==TARGET && targetArea>0) //Shooter in autotarget and target in view
+            {
+                //ShooterTurns=(ShooterEncoderVert.Get());
+                //shooterAngle=(AngleCorrection*ShooterTurns);
+
+                distanceToGoal = TARGET_ABOVE_CAMERA / tan((CAMERA_ANGLE + targetOffsetAngleVertical) * PI / 180.0);
+                distanceToInnerGoal = distanceToGoal + ADD_TO_INNER_GOAL;
+                //goalAngle = atan(GOAL_ABOVE_SHOOTER / distanceToGoal) * 180.0 / PI;
+                //innerGoalAngle = atan(GOAL_ABOVE_SHOOTER / distanceToInnerGoal) * 180.0 / PI;
+                Turret_Y_Target=(((distanceToGoal-7)/(20-5)) * (2000-1100))+1100; 
+                if(distanceToGoal<8.5006) Turret_Y_Target=0;
+                if(Turret_Y_Target<0) Turret_Y_Target=0;
+                if(Turret_Y_Target>1950) Turret_Y_Target=1950;
+                Turret_Y_Target=-Turret_Y_Target;	// autocompute angle
+                
+                Turret_X_Target += (int)((((.5*PI) - targetOffsetAngleHorizontal) / (.5*PI)) * 750.0);
+                if(Turret_X_Target<-180000) Turret_X_Target = -180000;
+                if(Turret_X_Target>180000) Turret_X_Target =180000;
+            }
+            
+
+            //Send motion commands to the turret.
+            //Turret_Angle.Set(shooterAdjustVERT);
+            //Turret_Rotate.Set(ControlMode::PercentOutput,shooterAdjustROT); 
+            
+            
+
+            //toggle Limelight  between manual and automatic targetting modes
+        
+            /*	//Old test code
+            targetSkew = table->GetNumber("ts",0.0);
+            Hor_Length = table->GetNumber("tlong",0.0);
+            Ver_Length = table->GetNumber("tshort",0.0);
+
+            xCorners[0] = 5.0;
+            xCorners[1] = 6.0;
+            xCorners = table->GetNumberArray("tcornx", XY_Default);
+            yCorners = table->GetNumberArray("tcorny", XY_Default);*/
+        }
+    }
+
+    void BreakInYaw(){
+        //This Program was made to check for jams in the 3d printed parts for yaw
+        switch (BreakInNum){
+            case 0: if (ServoEncoderCounts < 50){
+                Turret_Y_Target = 2000;
+                BreakInNum = 1;
+                }
+                break;
+            case 1: if (ServoEncoderCounts > 1950){
+                    Turret_Y_Target = 0;
+                    BreakInNum = 1;
+                }
+                break;
+        }
+    }
+
+    void Shooter()
+    {
+        float YPwr;
+        
+
+        if (!Shooter_On)
+            SpinUpTimer.Reset(); //this keeps track of time that the shooter has been spinning
+
+        switch (ShooterState)
+        {
+
+        case 0: //Shooter waiting for triggering
+            if ((Turret_Stick.GetTrigger() && !WheelState)||(IsAutonomous()&AutoTimer.Get()>3.0))
+            {
+                ShooterState = 1; //trigger detected, advance
+            }
+            if (ShooterTimer.Get() > 2.0)
+            { //turn off shooter if no shots in 5 seconds
+                Shooter_On = 0;
+            }
+            break;
+        case 1: //SKIPED             //Shooter spinning up, to shoot
+            Shooter_On = 1; //start motor, if not already running
+            if (SpinUpTimer.Get() > 1.0)
+            {                     //if motors running longer than spinup time...}
+                ShooterState = 2; //shooter motor ready, advance
+            }
+            if (!Turret_Stick.GetTrigger()&&!IsAutonomous())
+            { //trigger released too soon
+                ShooterState = 0;
+            }
+            break;
+        case 2: //shooter advancing trigger wheel to push ball in to turret
+            Shooter_On = 1;
+            if(Turret_Stick.GetRawButton(3) || IsAutonomous()) //Having error with the trigger motor being jittery
+            //if (Turret_Stick.GetRawButton(3)) 
+                //Trigger_Motor.Set(ControlMode::PercentOutput, -.75);
+                Shooter_Trigger_On = 1;
+                
+            else
+                //Trigger_Motor.Set(ControlMode::PercentOutput, 0);
+                Shooter_Trigger_On = 0;
+            if (Turret_Stick.GetRawButton(10))
+                Agitate_on = 1;
+            else
+                Agitate_on = 0;
+            if (!Turret_Stick.GetTrigger() && !IsAutonomous())
+            {                        //trigger released, assume ball has been fired
+                SpinUpTimer.Reset(); //assume shooter wheel has been slowed by ball passing through. Wait for spinup again
+                Shooter_Trigger_On = 0;
+                ShooterTimer.Reset(); //timer for leaving shooter on
+                ShooterState = 0;    //ball has been shot, go wait for new trigger
+              
+
+            }
+            break;
+     
+        }
+        //Force Shooter Wheel Off and reset state machine
+       // if (Turret_Stick.GetRawButton(3))
+        //{
+         //   Shooter_On = 0;
+          //  ShooterState = 0;
+       // }
+        
+
+
+        //Manual Targeting
+        if (Turret_Stick.GetRawButton(2))
+        {
+            Turret_Motor.ConfigPeakOutputForward(+0.25f, TIMEOUT); //sets max speed of movement .5 is about max needed
+            Turret_Motor.ConfigPeakOutputReverse(-0.25f, TIMEOUT);
+            Turret_X_Target += (int)(Turret_Stick.GetX() * -17500);
+            //if (Turret_X_Target > 210000) Turret_X_Target=210000;
+            //if (Turret_X_Target < -210000) Turret_X_Target=-210000;
+            Turret_Y_Target += (int)(Turret_Stick.GetY() * 200.0);
+            if (Turret_Y_Target > 0) Turret_Y_Target=0;
+            if (Turret_Y_Target < -2000) Turret_Y_Target=-2000;
+            if(ManualTargeting == 0){
+                ManualTargeting = 1;
+                TargettingMode = CAMERA;
+                LimeMode=CAMERA;
+                table->PutNumber("camMode",TargettingMode);
+            }
+        }
+        else if (Turret_Stick.GetRawButton(5))
+        {
+            if(ManualTargeting == 1){
+                Turret_X_Target=0;    
+                ManualTargeting = 0;
+                TargettingMode = TARGET;
+                LimeMode = TARGET;
+                table->PutNumber("camMode",TargettingMode);
+            }
+        }
+
+        TargetLime();
+
+        if(Turret_Stick.GetRawButton(9)){
+                Turret_X_Target=0;
+                Turret_Y_Target=-200;
+        } 
+        /*if(Turret_Stick.GetRawButton(7)){
+                Turret_X_Target=40000;
+                Turret_Y_Target=-200;
+        } */
+        if(Turret_Stick.GetRawButton(11)){
+                Turret_X_Target=-40000;
+                Turret_Y_Target=-200;
+        } 
+
+        //Position the yaw motor
+        
+        if (Turret_X_Target > 220000 && !ZeroTurret)
+            Turret_X_Target = 220000;
+        if (Turret_X_Target < -220000  && !ZeroTurret)
+            Turret_X_Target = -220000;
+        Turret_Motor.Set(ControlMode::Position, Turret_X_Target);
+        TurretEncoderCounts = Turret_Motor.GetSelectedSensorPosition();
+
+        //Position the Servo Deflector
+        if (Turret_Y_Target < -2200)
+            Turret_Y_Target = -2200;
+        if (Turret_Y_Target > 0)
+            Turret_Y_Target = 0;
+        ServoEncoderCounts = (ShooterEncoderVert.Get());
+        YPwr = -((float)(ServoEncoderCounts - Turret_Y_Target) / 200.0);
+        Turret_Angle.Set(YPwr);
+        if (Turret_Stick.GetRawButton(12))
+        {
+            Shooter_Speed_Target = 1.0;
+        }
+        else
+        {
+        Shooter_Speed_Target = ((1.0 + (-Turret_Stick.GetZ())) / 2.0);
+        }
+
+        if (Shooter_On)
+        {
+            Shooter_MotorA.Set(ControlMode::PercentOutput, -Shooter_Speed_Target);
+            Shooter_MotorB.Set(ControlMode::PercentOutput, -Shooter_Speed_Target);
+        }
+        else
+        {
+            Shooter_MotorA.Set(ControlMode::PercentOutput, 0);
+            Shooter_MotorB.Set(ControlMode::PercentOutput, 0);
+        }
+
+        if (Shooter_Trigger_On==1)
+        {
+            Trigger_Motor.Set(ControlMode::PercentOutput, -.75);
+        }
+        //else if (Shooter_Trigger_On==-1)
+        //{
+          //  Trigger_Motor.Set(ControlMode::PercentOutput, .75);
+        //}
+        else
+        {
+            Trigger_Motor.Set(ControlMode::PercentOutput, 0);
+        }
+    }
+
+    int gUpdateCount = 0; ///counter to be sure we only update drive screen every once in a while so it does not bog down the network
+    void UpdateDriverScreen(void)
+    {
+        char str[40];
+
+        if (gUpdateCount <= 0)
+        {
+            gUpdateCount = 25; //delay between displays to not bog down system
+            sprintf(str, "Servo T%d,A%d", Turret_Y_Target, ServoEncoderCounts);
+            frc::SmartDashboard::PutString("DB/String 0", str);
+            sprintf(str, "Yaw T%d,A%d", Turret_X_Target, TurretEncoderCounts);
+            frc::SmartDashboard::PutString("DB/String 1", str);
+            sprintf(str, "Shooter Spd %f", Shooter_Speed_Target);
+            frc::SmartDashboard::PutString("DB/String 2", str);
+            sprintf(str, "TDis %4.2f", distanceToGoal);
+            frc::SmartDashboard::PutString("DB/String 3", str);
+            sprintf(str, "TAngle %4.2f", targetOffsetAngleHorizontal);
+			frc::SmartDashboard::PutString("DB/String 4", str);
+			sprintf(str, "TelIME %4.2f ZT:%d", TelopTimer.Get(),ZeroTurret);
+			frc::SmartDashboard::PutString("DB/String 5", str);
+			//sprintf(str, "Elv T%d,A%d",WinchTarget,WinchEncoderCounts);
+			//frc::SmartDashboard::PutString("DB/String 6", str);
+            sprintf(str, "Joy Y %4.2f,",Turret_Stick.GetY());
+			frc::SmartDashboard::PutString("DB/String 6", str);
+			sprintf(str, "Drive speed %4.2f",Drive_Speed_Target);
+			frc::SmartDashboard::PutString("DB/String 7", str);
+			sprintf(str, "TPos %d",Turret_Motor.GetSensorCollection().GetQuadraturePosition());
+			frc::SmartDashboard::PutString("DB/String 8", str);
+            sprintf(str, "L %4.2f R %4.2f",-Left_Stick.GetZ(), -Right_Stick.GetZ());
+			frc::SmartDashboard::PutString("DB/String 9", str);
+            
+            
+			/*sprintf(str, "TY %4.2f Ang %4.2f",targetOffsetAngleVertical, shooterAdjustVERT);
+			frc::SmartDashboard::PutString("DB/String 8", str);
+			sprintf(str, "TX %4.2f Rot %4.2f", targetOffsetAngleHorizontal, shooterAdjustROT);
+			frc::SmartDashboard::PutString("DB/String 9", str);*/
+        }
+        gUpdateCount--;
+    } // End UpdateDriverScreen
+
+    void AutonomousPeriodic() override
+    {
+        if (!Initialized)
+        {
+            RobotInit();
+        }
+        if(!WasAuto){
+             ZeroTurret=1;
+             WasAuto=1;
+             AutoTimer.Reset();
+        }
+        if (ZeroTurret&&AutoTimer.Get()>3.0)
+        {                        
+            Turret_Motor.GetSensorCollection().SetQuadraturePosition(-240000, TIMEOUT);
+            Turret_X_Target=00;
+            ZeroTurret=0;
+        }
+        RobotDrive();
+        //Climber();
+        IntakeIsDown = 1;
+        Intake_Up.Set(0);
+        Intake_Down.Set(1);
+        Intake();
+        //WheelOF(); //must be called right before shooter
+        Shooter();
+        UpdateDriverScreen();
+        TelopTimer.Reset();
+    }
+
+    void TeleopPeriodic() override
+    {
+
+        if (!Initialized)
+        {
+            RobotInit();
+        }
+        if(!WasTelop){
+             ZeroTurret=1;
+             WasTelop=1;
+             TelopTimer.Reset();
+        }
+        if (ZeroTurret&&TelopTimer.Get()>3.0)
+        {                        
+            Turret_Motor.GetSensorCollection().SetQuadraturePosition(-240000, TIMEOUT);
+            Turret_X_Target=00;
+            ZeroTurret=0;
+        }
+            
+        Current0=PDP.GetCurrent(0);
+        RobotDrive();
+        Climber();
+        Intake();
+        //WheelOF(); //must be called right before shooter
+        Shooter();
+        UpdateDriverScreen();
+
+        /*if (Turret_Stick.GetRawButton(3))
+            Trigger_Motor.Set(ControlMode::PercentOutput, -.75);
+        else
+            Trigger_Motor.Set(ControlMode::PercentOutput, 0);*/
+        
+        
+            
+        //BreakInYaw is meant to try to check for shooter yaw servo jams and break in the 3d printed parts
+        //BreakInYaw();
+    }
+
+private:
+    static void VisionThread() {
+        cs::UsbCamera camera = frc::CameraServer::GetInstance()->StartAutomaticCapture();
+    }
+    frc::Joystick Left_Stick{1};
+    frc::Joystick Right_Stick{0};
+    frc::Joystick Turret_Stick{2};
+
+    TalonFX LR_Motor = {12};
+    TalonFX LF_Motor = {13};
+    TalonFX RF_Motor = {14};
+    TalonFX RR_Motor = {15};
+    TalonSRX Winch_Motor = {16};
+    TalonSRX WheelOF_Motor ={1};
+    //VictorSPX Lifter_Motors = {7};
+    VictorSPX Intake_Motor = {8};
+    TalonSRX Magazine_Motor = {5};
+    TalonSRX Shooter_MotorA = {9};
+    TalonSRX Shooter_MotorB = {10};
+    TalonSRX Turret_Motor = {4};
+    VictorSPX Trigger_Motor = {11};
+
+    
+    frc::Solenoid Climber_Front{1};
+    frc::Solenoid Climber_Back{0};
+    frc::Solenoid Climber_Up{2};
+    frc::Solenoid Climber_Down{3};
+    frc::Solenoid Intake_Up{4};
+    frc::Solenoid Intake_Down{5};
+    frc::Solenoid WheelOF_Up{6};
+    frc::Solenoid WheelOF_Down{7};
+
+    frc::Timer ShooterTimer;
+    frc::Timer SpinUpTimer;
+    frc::Timer MagazineTimer;
+    frc::Timer ClimbTimer;
+    frc::Timer AutoTimer;
+    frc::Timer TelopTimer;
+
+    
+};
+
+#ifndef RUNNING_FRC_TESTS
+int main()
+{
+    return frc::StartRobot<Robot>();
+}
+#endif
+
+void Robot::RobotInit()
+{
+    Initialized = 1;
+    std::thread visionThread(VisionThread);
+    visionThread.detach();
+    ClimbIsBack = 0;
+    Climber_Front.Set(1);
+    Climber_Back.Set(0);
+    ClimbIsUp = 0;
+    Climber_Up.Set(0);
+    Climber_Down.Set(1);
+    IntakeIsDown = 0;
+    Intake_Up.Set(1);
+    Intake_Down.Set(0);
+    Turret_X_Target = 0;
+    Turret_Y_Target = 0;
+
+    ClimberState=0;
+    ClimbTimer.Start();
+    ClimbTimer.Reset();
+
+    SpinUpTimer.Start();
+    SpinUpTimer.Reset();
+    ShooterTimer.Start();
+    ShooterTimer.Reset();
+    MagazineTimer.Start();
+    MagazineTimer.Reset();
+    AutoTimer.Start();
+    AutoTimer.Reset();
+    TelopTimer.Start();
+    TelopTimer.Reset();
+    ShooterEncoderVert.Reset();
+   
+    WheelOF_Motor.GetSensorCollection().SetQuadraturePosition(0, TIMEOUT);
+    WheelOF_Motor.ConfigSelectedFeedbackSensor(FeedbackDevice::QuadEncoder, 0, NOTIMEOUT); /* PIDLoop=0 */
+    WheelOF_Motor.SetSensorPhase(false);
+    WheelOF_Motor.ConfigNominalOutputForward(0.0f, TIMEOUT);
+    WheelOF_Motor.ConfigNominalOutputReverse(0.0f, TIMEOUT);
+    WheelOF_Motor.ConfigPeakOutputForward(+1.0f, TIMEOUT); //sets max speed of movement .2 is about max needed
+    WheelOF_Motor.ConfigPeakOutputReverse(-1.0f, TIMEOUT);
+    WheelOF_Motor.SelectProfileSlot(0, 0);
+    WheelOF_Motor.Config_kP(0, 0.5, TIMEOUT); //this needs to be .1 so it does not have enough power to break stops
+    WheelOF_Motor.Config_kI(0, 0.0, TIMEOUT);
+    WheelOF_Motor.Config_kD(0, 0.0, TIMEOUT);
+    WheelOF_Motor.Set(ControlMode::PercentOutput, 0.0);
+    //WheelOF_Motor.GetSensorCollection().SetQuadraturePosition(0,TIMEOUT);
+
+    Turret_Motor.GetSensorCollection().SetQuadraturePosition(0, TIMEOUT);
+    Turret_Motor.ConfigSelectedFeedbackSensor(FeedbackDevice::QuadEncoder, 0, NOTIMEOUT); /* PIDLoop=0 */
+    Turret_Motor.SetSensorPhase(false);
+    Turret_Motor.ConfigNominalOutputForward(0.0f, TIMEOUT);
+    Turret_Motor.ConfigNominalOutputReverse(0.0f, TIMEOUT);
+    Turret_Motor.ConfigPeakOutputForward(+0.25f, TIMEOUT); //sets max speed of movement .2 is about max needed
+    Turret_Motor.ConfigPeakOutputReverse(-0.25f, TIMEOUT);
+    Turret_Motor.SelectProfileSlot(0, 0);
+    Turret_Motor.Config_kP(0, 0.1, TIMEOUT); //this needs to be .1 so it does not have enough power to break stops
+    Turret_Motor.Config_kI(0, 0.0, TIMEOUT);
+    Turret_Motor.Config_kD(0, 0.0, TIMEOUT);
+    Turret_Motor.Set(ControlMode::Position, 0.0);
+    Turret_Motor.GetSensorCollection().SetQuadraturePosition(0,TIMEOUT);
+   
+    Shooter_MotorA.ConfigNominalOutputForward(0.0f, TIMEOUT);
+    Shooter_MotorA.ConfigNominalOutputReverse(0.0f, TIMEOUT);
+    Shooter_MotorA.ConfigPeakOutputForward(+12.0f, TIMEOUT);
+    Shooter_MotorA.ConfigPeakOutputReverse(-12.0f, TIMEOUT);
+    Shooter_MotorA.SelectProfileSlot(0, 0);
+    Shooter_MotorA.Config_kP(0, 0.5, TIMEOUT);
+    Shooter_MotorA.Config_kI(0, 0.0, TIMEOUT);
+    Shooter_MotorA.Config_kD(0, 0.0, TIMEOUT);
+    Shooter_MotorA.Set(ControlMode::PercentOutput, 0.0);
+
+    Shooter_MotorB.ConfigNominalOutputForward(0.0f, TIMEOUT);
+    Shooter_MotorB.ConfigNominalOutputReverse(0.0f, TIMEOUT);
+    Shooter_MotorB.ConfigPeakOutputForward(+12.0f, TIMEOUT);
+    Shooter_MotorB.ConfigPeakOutputReverse(-12.0f, TIMEOUT);
+    Shooter_MotorB.SelectProfileSlot(0, 0);
+    Shooter_MotorB.Config_kP(0, 0.5, TIMEOUT);
+    Shooter_MotorB.Config_kI(0, 0.0, TIMEOUT);
+    Shooter_MotorB.Config_kD(0, 0.0, TIMEOUT);
+    Shooter_MotorB.Set(ControlMode::PercentOutput, 0.0);
+
+    Magazine_Motor.ConfigNominalOutputForward(0.0f, TIMEOUT);
+    Magazine_Motor.ConfigNominalOutputReverse(0.0f, TIMEOUT);
+    Magazine_Motor.ConfigPeakOutputForward(+12.0f, TIMEOUT);
+    Magazine_Motor.ConfigPeakOutputReverse(-12.0f, TIMEOUT);
+    Magazine_Motor.SelectProfileSlot(0, 0);
+    Magazine_Motor.Config_kP(0, 0.5, TIMEOUT);
+    Magazine_Motor.Config_kI(0, 0.0, TIMEOUT);
+    Magazine_Motor.Config_kD(0, 0.0, TIMEOUT);
+    Magazine_Motor.Set(ControlMode::PercentOutput, 0.0);
+
+    LR_Motor.ConfigNominalOutputForward(0.0f, TIMEOUT);
+    LR_Motor.ConfigNominalOutputReverse(0.0f, TIMEOUT);
+    LR_Motor.ConfigPeakOutputForward(+12.0f, TIMEOUT);
+    LR_Motor.ConfigPeakOutputReverse(-12.0f, TIMEOUT);
+    LR_Motor.SelectProfileSlot(0, 0);
+    LR_Motor.Config_kP(0, 0.1, TIMEOUT);
+    LR_Motor.Config_kI(0, 0.0, TIMEOUT);
+    LR_Motor.Config_kD(0, 0.0, TIMEOUT);
+    LR_Motor.Set(ControlMode::PercentOutput, 0.0);
+
+    LF_Motor.ConfigNominalOutputForward(0.0f, TIMEOUT);
+    LF_Motor.ConfigNominalOutputReverse(0.0f, TIMEOUT);
+    LF_Motor.ConfigPeakOutputForward(+12.0f, TIMEOUT);
+    LF_Motor.ConfigPeakOutputReverse(-12.0f, TIMEOUT);
+    LF_Motor.SelectProfileSlot(0, 0);
+    LF_Motor.Config_kP(0, 0.1, TIMEOUT);
+    LF_Motor.Config_kI(0, 0.0, TIMEOUT);
+    LF_Motor.Config_kD(0, 0.0, TIMEOUT);
+    LF_Motor.Set(ControlMode::PercentOutput, 0.0);
+
+    RF_Motor.ConfigNominalOutputForward(0.0f, TIMEOUT);
+    RF_Motor.ConfigNominalOutputReverse(0.0f, TIMEOUT);
+    RF_Motor.ConfigPeakOutputForward(+12.0f, TIMEOUT);
+    RF_Motor.ConfigPeakOutputReverse(-12.0f, TIMEOUT);
+    RF_Motor.SelectProfileSlot(0, 0);
+    RF_Motor.Config_kP(0, 0.1, TIMEOUT);
+    RF_Motor.Config_kI(0, 0.0, TIMEOUT);
+    RF_Motor.Config_kD(0, 0.0, TIMEOUT);
+    RF_Motor.Set(ControlMode::PercentOutput, 0.0);
+
+    RR_Motor.ConfigNominalOutputForward(0.0f, TIMEOUT);
+    RR_Motor.ConfigNominalOutputReverse(0.0f, TIMEOUT);
+    RR_Motor.ConfigPeakOutputForward(+12.0f, TIMEOUT);
+    RR_Motor.ConfigPeakOutputReverse(-12.0f, TIMEOUT);
+    RR_Motor.SelectProfileSlot(0, 0);
+    RR_Motor.Config_kP(0, 0.1, TIMEOUT);
+    RR_Motor.Config_kI(0, 0.0, TIMEOUT);
+    RR_Motor.Config_kD(0, 0.0, TIMEOUT);
+    RR_Motor.Set(ControlMode::PercentOutput, 0.0);
+
+
+    Winch_Motor.ConfigSelectedFeedbackSensor(FeedbackDevice::QuadEncoder, 0, NOTIMEOUT); /* PIDLoop=0 */
+    Winch_Motor.SetSensorPhase(false);
+    Winch_Motor.ConfigNominalOutputForward(0.0f, TIMEOUT);
+    Winch_Motor.ConfigNominalOutputReverse(0.0f, TIMEOUT);
+    Winch_Motor.ConfigPeakOutputForward(+1.0f, TIMEOUT); //sets max speed of movement .2 is about max needed
+    Winch_Motor.ConfigPeakOutputReverse(-1.0f, TIMEOUT);
+    Winch_Motor.SelectProfileSlot(0, 0);
+    Winch_Motor.Config_kP(0, 0.5, TIMEOUT); //this needs to be .1 so it does not have enough power to break stops
+    Winch_Motor.Config_kI(0, 0.0, TIMEOUT);
+    Winch_Motor.Config_kD(0, 0.0, TIMEOUT);
+    Winch_Motor.Set(ControlMode::PercentOutput, 0.0);
+   
+}
